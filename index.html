@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>多人心率即時團控看板</title>
+  <style>
+    * { box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
+    body { background-color: #121212; color: #ffffff; margin: 0; padding: 20px; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    h1 { margin: 0; font-size: 1.5rem; }
+    
+    .btn {
+      background: #00e676; color: #000; border: none; padding: 12px 20px;
+      font-size: 1rem; font-weight: bold; border-radius: 8px; cursor: pointer;
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-save { background: #29b6f6; margin-left: 10px; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+    
+    .card {
+      background: #1e1e1e; border-radius: 12px; padding: 16px; text-align: center;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.5); transition: background 0.3s;
+    }
+    .card .device-name { font-size: 0.9rem; color: #aaa; margin-bottom: 8px; }
+    .card .bpm { font-size: 3.5rem; font-weight: 900; line-height: 1; margin: 10px 0; }
+    .card .zone-label { font-size: 0.85rem; font-weight: bold; text-transform: uppercase; }
+    .card .stats { font-size: 0.75rem; color: #888; margin-top: 8px; }
+    
+    .zone-warmup { background: #1b5e20; color: #a5d6a7; } 
+    .zone-aerobic { background: #f57f17; color: #fffde7; } 
+    .zone-threshold { background: #e65100; color: #ffe0b2; } 
+    .zone-max { background: #b71c1c; color: #ffcdd2; } 
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>🚴‍♂️ 多人心率團控看板</h1>
+    <div>
+      <button class="btn" id="btnConnect">+ 連接心率裝置</button>
+      <button class="btn btn-save" onclick="saveToSheets()">💾 上傳紀錄至試算表</button>
+    </div>
+  </header>
+
+  <div class="grid" id="cardContainer"></div>
+
+  <script>
+    // ⚠️ 貼上你的 GAS Web App URL 網址
+    const GAS_WEB_APP_URL = "https://script.google.com/macros/s/你的GAS網址/exec";
+
+    const connectedDevices = [];
+
+    document.getElementById('btnConnect').addEventListener('click', async () => {
+      if (!navigator.bluetooth) {
+        alert("⚠️ 瀏覽器不支援 Web Bluetooth API！");
+        return;
+      }
+
+      try {
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ services: ['heart_rate'] }]
+        });
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService('heart_rate');
+        const characteristic = await service.getCharacteristic('heart_rate_measurement');
+
+        const deviceId = device.id;
+        const deviceName = device.name || `心率帶 ${connectedDevices.length + 1}`;
+
+        const deviceData = {
+          id: deviceId,
+          name: deviceName,
+          bpmHistory: [],
+          maxHr: 0,
+          element: createCardElement(deviceId, deviceName)
+        };
+
+        connectedDevices.push(deviceData);
+
+        await characteristic.startNotifications();
+        characteristic.addEventListener('characteristicvaluechanged', (event) => {
+          const value = event.target.value;
+          const bpm = value.getUint8(1); 
+          updateDeviceData(deviceData, bpm);
+        });
+
+        device.addEventListener('gattserverdisconnected', () => {
+          deviceData.element.querySelector('.bpm').innerText = 'OFF';
+          deviceData.element.className = 'card';
+        });
+
+      } catch (error) {
+        console.log("連線取消或失敗:", error);
+      }
+    });
+
+    function createCardElement(id, name) {
+      const container = document.getElementById('cardContainer');
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.id = `card-${id}`;
+      card.innerHTML = `
+        <div class="device-name">${name}</div>
+        <div class="bpm">--</div>
+        <div class="zone-label">等待數據...</div>
+        <div class="stats">最高: -- | 平均: --</div>
+      `;
+      container.appendChild(card);
+      return card;
+    }
+
+    function updateDeviceData(deviceData, bpm) {
+      deviceData.bpmHistory.push(bpm);
+      if (bpm > deviceData.maxHr) deviceData.maxHr = bpm;
+      
+      const sum = deviceData.bpmHistory.reduce((a, b) => a + b, 0);
+      const avgHr = Math.round(sum / deviceData.bpmHistory.length);
+
+      const card = deviceData.element;
+      card.querySelector('.bpm').innerText = bpm;
+      card.querySelector('.stats').innerText = `最高: ${deviceData.maxHr} | 平均: ${avgHr}`;
+
+      card.className = 'card ' + getZoneClass(bpm);
+      card.querySelector('.zone-label').innerText = getZoneText(bpm);
+    }
+
+    function getZoneClass(bpm) {
+      if (bpm < 120) return 'zone-warmup';
+      if (bpm < 150) return 'zone-aerobic';
+      if (bpm < 170) return 'zone-threshold';
+      return 'zone-max';
+    }
+
+    function getZoneText(bpm) {
+      if (bpm < 120) return '暖身 / 輕度';
+      if (bpm < 150) return '燃脂 / 有氧';
+      if (bpm < 170) return '馬拉松 / 閾值';
+      return '無氧 / 警示';
+    }
+
+    // 將數據透過 fetch 傳送至 GAS API
+    async function saveToSheets() {
+      if (connectedDevices.length === 0) {
+        alert("目前沒有連接任何裝置！");
+        return;
+      }
+
+      const payload = connectedDevices.map(d => {
+        const sum = d.bpmHistory.reduce((a, b) => a + b, 0);
+        return {
+          name: d.name,
+          avgHr: d.bpmHistory.length ? Math.round(sum / d.bpmHistory.length) : 0,
+          maxHr: d.maxHr,
+          count: d.bpmHistory.length
+        };
+      });
+
+      try {
+        // 使用 mode: 'no-cors' 避開跨網域攔截
+        await fetch(GAS_WEB_APP_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        alert("🎉 數據已傳送至 Google 試算表！");
+      } catch (err) {
+        alert("❌ 上傳失敗: " + err);
+      }
+    }
+  </script>
+</body>
+</html>
