@@ -115,6 +115,16 @@
 
     const connectedDevices = [];
 
+    // 安全轉義 HTML 特殊字元 (防止 '+' 或其餘特殊符號影響 HTML 渲染)
+    function escapeHtml(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
     document.getElementById('btnConnect').addEventListener('click', async () => {
       if (!navigator.bluetooth) {
         alert("⚠️ 瀏覽器不支援 Web Bluetooth API，請使用 HTTPS 或 localhost 環境開啟！");
@@ -147,7 +157,7 @@
 
         connectedDevices.push(deviceData);
 
-        // ⚡ 2. 立即更新頂部「已連線裝置」標籤列（不用等待 GAS 請求，達 0 秒延遲效果）
+        // ⚡ 2. 立即更新頂部「已連線裝置」標籤列（達 0 秒延遲效果）
         updateBoardHeaderSummary();
 
         await characteristic.startNotifications();
@@ -176,7 +186,10 @@
       const itemEl = deviceData.element.querySelector('.item-number');
 
       try {
-        const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceId=${encodeURIComponent(deviceData.id)}`);
+        // 💡 關鍵修正：對 deviceId 進行雙重 URL 編碼 (Double encodeURIComponent)
+        // 避免 GAS 在 HTTP 302 重導向過程中將 '+' 號誤轉為空格 ' '
+        const safeDeviceId = encodeURIComponent(encodeURIComponent(deviceData.id));
+        const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceId=${safeDeviceId}`);
         const data = await response.json();
 
         if (data && data.matched && data.itemNumber) {
@@ -209,10 +222,10 @@
       const badgeList = connectedDevices.map(d => {
         if (d.itemNumber) {
           // 比對成功
-          return `<span class="badge-item matched">📦 ${d.itemNumber}</span>`;
+          return `<span class="badge-item matched">📦 ${escapeHtml(d.itemNumber)}</span>`;
         } else {
           // 比對失敗或尚未比對完成時先顯示裝置內碼
-          return `<span class="badge-item unmatched">🆔 ${d.id}</span>`;
+          return `<span class="badge-item unmatched">🆔 ${escapeHtml(d.id)}</span>`;
         }
       });
 
@@ -230,9 +243,9 @@
       card.id = `card-${id}`;
       card.innerHTML = `
         <!-- 預設直接顯示裝置內碼 -->
-        <div class="item-number unmatched">🆔 ${id}</div>
+        <div class="item-number unmatched">🆔 ${escapeHtml(id)}</div>
         <!-- 藍芽裝置原始名稱 -->
-        <div class="device-name">${name}</div>
+        <div class="device-name">${escapeHtml(name)}</div>
         <div class="bpm">--</div>
         <div class="zone-label">等待數據...</div>
         <div class="stats">最高: -- | 平均: --</div>
