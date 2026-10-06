@@ -7,8 +7,27 @@
   <style>
     * { box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
     body { background-color: #121212; color: #ffffff; margin: 0; padding: 20px; }
-    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }
     h1 { margin: 0; font-size: 1.5rem; }
+    
+    /* 頂部看板同步物品清單樣式 */
+    .summary-bar {
+      margin-top: 6px;
+      font-size: 0.9rem;
+      color: #aaa;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .badge-item {
+      background: #00e676;
+      color: #000;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: bold;
+      font-size: 0.85rem;
+    }
     
     .btn {
       background: #00e676; color: #000; border: none; padding: 12px 20px;
@@ -23,14 +42,20 @@
       background: #1e1e1e; border-radius: 12px; padding: 16px; text-align: center;
       box-shadow: 0 4px 10px rgba(0,0,0,0.5); transition: background 0.3s;
     }
-    /* 物品編號標籤樣式 */
+    
+    /* 物品編號標籤樣式 (卡片內) */
     .card .item-number {
-      font-size: 1.1rem;
+      font-size: 1.2rem;
       font-weight: bold;
       color: #00e676;
-      margin-bottom: 4px;
+      background: rgba(0, 230, 118, 0.1);
+      border: 1px solid #00e676;
+      border-radius: 6px;
+      padding: 4px 8px;
+      margin-bottom: 8px;
       display: none; /* 預設不顯示，Match 成功後才開啟 */
     }
+    
     .card .device-name { font-size: 0.85rem; color: #888; margin-bottom: 8px; }
     .card .bpm { font-size: 3.5rem; font-weight: 900; line-height: 1; margin: 10px 0; }
     .card .zone-label { font-size: 0.85rem; font-weight: bold; text-transform: uppercase; }
@@ -45,7 +70,14 @@
 <body>
 
   <header>
-    <h1>🚴‍♂️ 多人心率團控看板</h1>
+    <div>
+      <h1>🚴‍♂️ 多人心率團控看板</h1>
+      <!-- 看板頂部同步顯示已配對 Sheet2 的物品清單 -->
+      <div class="summary-bar">
+        <span>已連線物品：</span>
+        <div id="itemListSummary">尚無配對物品</div>
+      </div>
+    </div>
     <div>
       <button class="btn" id="btnConnect">+ 連接心率裝置</button>
       <button class="btn btn-save" onclick="saveToSheets()">💾 上傳紀錄至試算表</button>
@@ -55,7 +87,7 @@
   <div class="grid" id="cardContainer"></div>
 
   <script>
-    // ⚠️ 請替換為你發佈的 Google Apps Script Web App 網址
+    // 發佈的 Google Apps Script Web App 網址
     const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzdQV7quuIG04_KVvaog6dI8qRjRIRncgeMiWfJoNF1OCbIo3brkk_iillVyF1bikhDbw/exec";
 
     const connectedDevices = [];
@@ -101,9 +133,10 @@
         device.addEventListener('gattserverdisconnected', () => {
           deviceData.element.querySelector('.bpm').innerText = 'OFF';
           deviceData.element.className = 'card';
+          updateBoardHeaderSummary(); // 斷線時更新看板頂部清單
         });
 
-        // 🔗 藍芽配對完成後，拿着 deviceId 到 GAS 查詢是否有配對的物品編號
+        // 🔗 藍芽配對完成後，拿着 deviceId 到 GAS 查詢 Sheet2 是否有配對的物品編號
         await matchItemNumberFromGAS(deviceData);
 
       } catch (error) {
@@ -111,28 +144,50 @@
       }
     });
 
-    // 向 GAS 查詢藍芽內碼對應的物品編號
+    // 向 GAS 查詢藍芽內碼對應 Sheet2 的物品編號
     async function matchItemNumberFromGAS(deviceData) {
+      const itemEl = deviceData.element.querySelector('.item-number');
+      
+      // 顯示查詢中狀態
+      itemEl.innerText = "🔍 比對 Sheet2 中...";
+      itemEl.style.display = 'block';
+
       try {
         const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceId=${encodeURIComponent(deviceData.id)}`);
         const data = await response.json();
-        
-        const itemEl = deviceData.element.querySelector('.item-number');
 
         if (data && data.matched && data.itemNumber) {
           // Match 成功：寫入物品編號並顯示
           deviceData.itemNumber = data.itemNumber;
-          itemEl.innerText = data.itemNumber;
+          itemEl.innerText = `📦 ${data.itemNumber}`;
           itemEl.style.display = 'block';
         } else {
           // Match 失敗：隱藏不顯示
+          deviceData.itemNumber = "";
           itemEl.style.display = 'none';
           itemEl.innerText = '';
         }
       } catch (error) {
         console.error("無法查詢物品編號:", error);
-        // 發生錯誤時同樣保持隱藏
-        deviceData.element.querySelector('.item-number').style.display = 'none';
+        deviceData.itemNumber = "";
+        itemEl.style.display = 'none';
+      }
+
+      // 同步更新頂部「多人心率團控看板」的總覽清單
+      updateBoardHeaderSummary();
+    }
+
+    // 更新頂部看板的物品編號彙整清單
+    function updateBoardHeaderSummary() {
+      const summaryContainer = document.getElementById('itemListSummary');
+      const matchedItems = connectedDevices
+        .filter(d => d.itemNumber !== "")
+        .map(d => `<span class="badge-item">📦 ${d.itemNumber}</span>`);
+
+      if (matchedItems.length > 0) {
+        summaryContainer.innerHTML = matchedItems.join(' ');
+      } else {
+        summaryContainer.innerHTML = '<span style="color:#666;">無配對物品</span>';
       }
     }
 
@@ -183,7 +238,7 @@
       return '無氧 / 警示';
     }
 
-    // 將數據寫入至 Google 試算表
+    // 將數據寫入至 Sheet1
     async function saveToSheets() {
       if (connectedDevices.length === 0) {
         alert("目前沒有連接任何裝置！");
