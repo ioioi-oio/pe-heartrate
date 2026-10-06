@@ -115,7 +115,7 @@
 
     const connectedDevices = [];
 
-    // 安全轉義 HTML 特殊字元 (防止 '+' 或其餘特殊符號影響 HTML 畫面渲染)
+    // 安全轉義 HTML 特殊字元
     function escapeHtml(str) {
       return String(str || '')
         .replace(/&/g, '&amp;')
@@ -123,6 +123,15 @@
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+    }
+
+    // 將字串轉為十六進位 (Hex)，防止 '=' 與 '+' 在網址傳遞時被破壞
+    function stringToHex(str) {
+      let hex = '';
+      for (let i = 0; i < str.length; i++) {
+        hex += str.charCodeAt(i).toString(16).padStart(2, '0');
+      }
+      return hex;
     }
 
     document.getElementById('btnConnect').addEventListener('click', async () => {
@@ -157,7 +166,7 @@
 
         connectedDevices.push(deviceData);
 
-        // ⚡ 2. 立即更新頂部「已連線裝置」標籤列（不用等待 GAS 回應，達 0 秒延遲效果）
+        // ⚡ 2. 立即更新頂部「已連線裝置」標籤列（0 秒延遲）
         updateBoardHeaderSummary();
 
         await characteristic.startNotifications();
@@ -186,8 +195,9 @@
       const itemEl = deviceData.element.querySelector('.item-number');
 
       try {
-        const safeDeviceId = encodeURIComponent(deviceData.id);
-        const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceId=${safeDeviceId}`);
+        // 💡 使用 Hex 編碼傳送，百分之百避免 '=' 與 '+' 被網址截斷或轉換
+        const hexId = stringToHex(deviceData.id);
+        const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceIdHex=${hexId}`);
         const data = await response.json();
 
         if (data && data.matched && data.itemNumber) {
@@ -203,7 +213,6 @@
         }
       } catch (error) {
         console.error("無法查詢物品編號:", error);
-        // 發生錯誤時同樣呈現裝置內碼
         deviceData.itemNumber = "";
         itemEl.innerText = `🆔 ${deviceData.id}`;
         itemEl.className = "item-number unmatched";
@@ -213,16 +222,14 @@
       updateBoardHeaderSummary();
     }
 
-    // 更新頂部看板的已連線清單 (成功顯示物品編號，失敗顯示裝置內碼)
+    // 更新頂部看板的已連線清單
     function updateBoardHeaderSummary() {
       const summaryContainer = document.getElementById('itemListSummary');
       
       const badgeList = connectedDevices.map(d => {
         if (d.itemNumber) {
-          // 比對成功 (綠色標籤)
           return `<span class="badge-item matched">📦 ${escapeHtml(d.itemNumber)}</span>`;
         } else {
-          // 比對失敗或尚未比對完成時顯示裝置內碼 (藍灰色標籤)
           return `<span class="badge-item unmatched">🆔 ${escapeHtml(d.id)}</span>`;
         }
       });
@@ -240,9 +247,7 @@
       card.className = 'card';
       card.id = `card-${id}`;
       card.innerHTML = `
-        <!-- 預設直接顯示裝置內碼 -->
         <div class="item-number unmatched">🆔 ${escapeHtml(id)}</div>
-        <!-- 藍芽裝置原始名稱 -->
         <div class="device-name">${escapeHtml(name)}</div>
         <div class="bpm">--</div>
         <div class="zone-label">等待數據...</div>
@@ -292,7 +297,7 @@
         const sum = d.bpmHistory.reduce((a, b) => a + b, 0);
         return {
           id: d.id,
-          itemNumber: d.itemNumber || "未對應", // 寫入 Sheet1 時記錄物品編號
+          itemNumber: d.itemNumber || "未對應",
           name: d.name,
           avgHr: d.bpmHistory.length ? Math.round(sum / d.bpmHistory.length) : 0,
           maxHr: d.maxHr,
