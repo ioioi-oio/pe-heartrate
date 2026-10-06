@@ -12,7 +12,7 @@
     
     /* 頂部看板同步物品清單樣式 */
     .summary-bar {
-      margin-top: 6px;
+      margin-top: 8px;
       font-size: 0.9rem;
       color: #aaa;
       display: flex;
@@ -20,13 +20,25 @@
       gap: 8px;
       flex-wrap: wrap;
     }
+    
+    /* 標籤通用樣式 */
     .badge-item {
-      background: #00e676;
-      color: #000;
-      padding: 2px 8px;
-      border-radius: 4px;
+      padding: 3px 10px;
+      border-radius: 6px;
       font-weight: bold;
       font-size: 0.85rem;
+      transition: all 0.3s ease;
+    }
+    /* 比對成功的標籤 (綠色) */
+    .badge-item.matched {
+      background: #00e676;
+      color: #000000;
+    }
+    /* 比對失敗 / 預設顯示內碼的標籤 (藍灰色) */
+    .badge-item.unmatched {
+      background: #37474f;
+      color: #eceff1;
+      border: 1px solid #546e7a;
     }
     
     .btn {
@@ -43,17 +55,28 @@
       box-shadow: 0 4px 10px rgba(0,0,0,0.5); transition: background 0.3s;
     }
     
-    /* 物品編號標籤樣式 (卡片內) */
+    /* 物品編號 / 裝置內碼標籤 (卡片內) */
     .card .item-number {
-      font-size: 1.2rem;
+      font-size: 1.1rem;
       font-weight: bold;
-      color: #00e676;
-      background: rgba(0, 230, 118, 0.1);
-      border: 1px solid #00e676;
       border-radius: 6px;
       padding: 4px 8px;
       margin-bottom: 8px;
-      display: none; /* 預設不顯示，Match 成功後才開啟 */
+      display: block;
+      word-break: break-all;
+      transition: all 0.3s ease;
+    }
+    /* 卡片內 - 比對成功 */
+    .card .item-number.matched {
+      color: #00e676;
+      background: rgba(0, 230, 118, 0.1);
+      border: 1px solid #00e676;
+    }
+    /* 卡片內 - 比對失敗/顯示內碼 */
+    .card .item-number.unmatched {
+      color: #b0bec5;
+      background: rgba(176, 190, 197, 0.1);
+      border: 1px solid #546e7a;
     }
     
     .card .device-name { font-size: 0.85rem; color: #888; margin-bottom: 8px; }
@@ -72,10 +95,10 @@
   <header>
     <div>
       <h1>🚴‍♂️ 多人心率團控看板</h1>
-      <!-- 看板頂部同步顯示已配對 Sheet2 的物品清單 -->
+      <!-- 看板頂部同步顯示已配對物品/內碼清單 -->
       <div class="summary-bar">
-        <span>已連線物品：</span>
-        <div id="itemListSummary">尚無配對物品</div>
+        <span>已連線裝置：</span>
+        <div id="itemListSummary"><span style="color:#666;">尚無連線裝置</span></div>
       </div>
     </div>
     <div>
@@ -110,18 +133,22 @@
         const deviceId = device.id; // 藍芽裝置內碼 (Unique ID)
         const deviceName = device.name || `心率帶 ${connectedDevices.length + 1}`;
 
+        // 1. 先建立卡片 (預設帶入裝置內碼)
         const cardElement = createCardElement(deviceId, deviceName);
 
         const deviceData = {
           id: deviceId,
           name: deviceName,
-          itemNumber: "", // 用於儲存比對成功的物品編號
+          itemNumber: "", // 用於儲存 Sheet2 比對成功的物品編號
           bpmHistory: [],
           maxHr: 0,
           element: cardElement
         };
 
         connectedDevices.push(deviceData);
+
+        // ⚡ 2. 立即更新頂部「已連線裝置」標籤列（不用等待 GAS 請求，達 0 秒延遲效果）
+        updateBoardHeaderSummary();
 
         await characteristic.startNotifications();
         characteristic.addEventListener('characteristicvaluechanged', (event) => {
@@ -133,11 +160,11 @@
         device.addEventListener('gattserverdisconnected', () => {
           deviceData.element.querySelector('.bpm').innerText = 'OFF';
           deviceData.element.className = 'card';
-          updateBoardHeaderSummary(); // 斷線時更新看板頂部清單
+          updateBoardHeaderSummary(); // 斷線時同步更新看板頂部
         });
 
-        // 🔗 藍芽配對完成後，拿着 deviceId 到 GAS 查詢 Sheet2 是否有配對的物品編號
-        await matchItemNumberFromGAS(deviceData);
+        // ⚡ 3. 背景執行 Sheet2 比對，比對完自動無縫更新 UI
+        matchItemNumberFromGAS(deviceData);
 
       } catch (error) {
         console.log("連線取消或失敗:", error);
@@ -147,47 +174,52 @@
     // 向 GAS 查詢藍芽內碼對應 Sheet2 的物品編號
     async function matchItemNumberFromGAS(deviceData) {
       const itemEl = deviceData.element.querySelector('.item-number');
-      
-      // 顯示查詢中狀態
-      itemEl.innerText = "🔍 比對 Sheet2 中...";
-      itemEl.style.display = 'block';
 
       try {
         const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceId=${encodeURIComponent(deviceData.id)}`);
         const data = await response.json();
 
         if (data && data.matched && data.itemNumber) {
-          // Match 成功：寫入物品編號並顯示
+          // ✅ 比對成功：換成 Sheet2 的物品編號
           deviceData.itemNumber = data.itemNumber;
           itemEl.innerText = `📦 ${data.itemNumber}`;
-          itemEl.style.display = 'block';
+          itemEl.className = "item-number matched";
         } else {
-          // Match 失敗：隱藏不顯示
+          // ❌ 比對失敗：維持顯示裝置內碼
           deviceData.itemNumber = "";
-          itemEl.style.display = 'none';
-          itemEl.innerText = '';
+          itemEl.innerText = `🆔 ${deviceData.id}`;
+          itemEl.className = "item-number unmatched";
         }
       } catch (error) {
         console.error("無法查詢物品編號:", error);
+        // 發生錯誤時同樣呈現裝置內碼
         deviceData.itemNumber = "";
-        itemEl.style.display = 'none';
+        itemEl.innerText = `🆔 ${deviceData.id}`;
+        itemEl.className = "item-number unmatched";
       }
 
-      // 同步更新頂部「多人心率團控看板」的總覽清單
+      // 同步更新頂部看板清單
       updateBoardHeaderSummary();
     }
 
-    // 更新頂部看板的物品編號彙整清單
+    // 更新頂部看板的已連線清單 (成功顯示物品編號，失敗顯示裝置內碼)
     function updateBoardHeaderSummary() {
       const summaryContainer = document.getElementById('itemListSummary');
-      const matchedItems = connectedDevices
-        .filter(d => d.itemNumber !== "")
-        .map(d => `<span class="badge-item">📦 ${d.itemNumber}</span>`);
+      
+      const badgeList = connectedDevices.map(d => {
+        if (d.itemNumber) {
+          // 比對成功
+          return `<span class="badge-item matched">📦 ${d.itemNumber}</span>`;
+        } else {
+          // 比對失敗或尚未比對完成時先顯示裝置內碼
+          return `<span class="badge-item unmatched">🆔 ${d.id}</span>`;
+        }
+      });
 
-      if (matchedItems.length > 0) {
-        summaryContainer.innerHTML = matchedItems.join(' ');
+      if (badgeList.length > 0) {
+        summaryContainer.innerHTML = badgeList.join(' ');
       } else {
-        summaryContainer.innerHTML = '<span style="color:#666;">無配對物品</span>';
+        summaryContainer.innerHTML = '<span style="color:#666;">尚無連線裝置</span>';
       }
     }
 
@@ -197,8 +229,8 @@
       card.className = 'card';
       card.id = `card-${id}`;
       card.innerHTML = `
-        <!-- 物品編號抬頭 (Match 到才顯示) -->
-        <div class="item-number"></div>
+        <!-- 預設直接顯示裝置內碼 -->
+        <div class="item-number unmatched">🆔 ${id}</div>
         <!-- 藍芽裝置原始名稱 -->
         <div class="device-name">${name}</div>
         <div class="bpm">--</div>
@@ -249,7 +281,7 @@
         const sum = d.bpmHistory.reduce((a, b) => a + b, 0);
         return {
           id: d.id,
-          itemNumber: d.itemNumber || "未對應", // 若有對應物品編號則一併記錄
+          itemNumber: d.itemNumber || "未對應", // 寫入 Sheet1 時記錄物品編號
           name: d.name,
           avgHr: d.bpmHistory.length ? Math.round(sum / d.bpmHistory.length) : 0,
           maxHr: d.maxHr,
