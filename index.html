@@ -23,7 +23,15 @@
       background: #1e1e1e; border-radius: 12px; padding: 16px; text-align: center;
       box-shadow: 0 4px 10px rgba(0,0,0,0.5); transition: background 0.3s;
     }
-    .card .device-name { font-size: 0.9rem; color: #aaa; margin-bottom: 8px; }
+    /* 物品編號標籤樣式 */
+    .card .item-number {
+      font-size: 1.1rem;
+      font-weight: bold;
+      color: #00e676;
+      margin-bottom: 4px;
+      display: none; /* 預設不顯示，Match 成功後才開啟 */
+    }
+    .card .device-name { font-size: 0.85rem; color: #888; margin-bottom: 8px; }
     .card .bpm { font-size: 3.5rem; font-weight: 900; line-height: 1; margin: 10px 0; }
     .card .zone-label { font-size: 0.85rem; font-weight: bold; text-transform: uppercase; }
     .card .stats { font-size: 0.75rem; color: #888; margin-top: 8px; }
@@ -47,14 +55,14 @@
   <div class="grid" id="cardContainer"></div>
 
   <script>
-    // ⚠️ 貼上你的 GAS Web App URL 網址
-    const GAS_WEB_APP_URL = "https://script.google.com/macros/s/你的GAS網址/exec";
+    // ⚠️ 請替換為你發佈的 Google Apps Script Web App 網址
+    const GAS_WEB_APP_URL = "https://script.google.com/macros/s/你的GAS發佈ID/exec";
 
     const connectedDevices = [];
 
     document.getElementById('btnConnect').addEventListener('click', async () => {
       if (!navigator.bluetooth) {
-        alert("⚠️ 瀏覽器不支援 Web Bluetooth API！");
+        alert("⚠️ 瀏覽器不支援 Web Bluetooth API，請使用 HTTPS 或 localhost 環境開啟！");
         return;
       }
 
@@ -67,15 +75,18 @@
         const service = await server.getPrimaryService('heart_rate');
         const characteristic = await service.getCharacteristic('heart_rate_measurement');
 
-        const deviceId = device.id;
+        const deviceId = device.id; // 藍芽裝置內碼 (Unique ID)
         const deviceName = device.name || `心率帶 ${connectedDevices.length + 1}`;
+
+        const cardElement = createCardElement(deviceId, deviceName);
 
         const deviceData = {
           id: deviceId,
           name: deviceName,
+          itemNumber: "", // 用於儲存比對成功的物品編號
           bpmHistory: [],
           maxHr: 0,
-          element: createCardElement(deviceId, deviceName)
+          element: cardElement
         };
 
         connectedDevices.push(deviceData);
@@ -92,10 +103,38 @@
           deviceData.element.className = 'card';
         });
 
+        // 🔗 藍芽配對完成後，拿着 deviceId 到 GAS 查詢是否有配對的物品編號
+        await matchItemNumberFromGAS(deviceData);
+
       } catch (error) {
         console.log("連線取消或失敗:", error);
       }
     });
+
+    // 向 GAS 查詢藍芽內碼對應的物品編號
+    async function matchItemNumberFromGAS(deviceData) {
+      try {
+        const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceId=${encodeURIComponent(deviceData.id)}`);
+        const data = await response.json();
+        
+        const itemEl = deviceData.element.querySelector('.item-number');
+
+        if (data && data.matched && data.itemNumber) {
+          // Match 成功：寫入物品編號並顯示
+          deviceData.itemNumber = data.itemNumber;
+          itemEl.innerText = data.itemNumber;
+          itemEl.style.display = 'block';
+        } else {
+          // Match 失敗：隱藏不顯示
+          itemEl.style.display = 'none';
+          itemEl.innerText = '';
+        }
+      } catch (error) {
+        console.error("無法查詢物品編號:", error);
+        // 發生錯誤時同樣保持隱藏
+        deviceData.element.querySelector('.item-number').style.display = 'none';
+      }
+    }
 
     function createCardElement(id, name) {
       const container = document.getElementById('cardContainer');
@@ -103,6 +142,9 @@
       card.className = 'card';
       card.id = `card-${id}`;
       card.innerHTML = `
+        <!-- 物品編號抬頭 (Match 到才顯示) -->
+        <div class="item-number"></div>
+        <!-- 藍芽裝置原始名稱 -->
         <div class="device-name">${name}</div>
         <div class="bpm">--</div>
         <div class="zone-label">等待數據...</div>
@@ -141,7 +183,7 @@
       return '無氧 / 警示';
     }
 
-    // 將數據透過 fetch 傳送至 GAS API
+    // 將數據寫入至 Google 試算表
     async function saveToSheets() {
       if (connectedDevices.length === 0) {
         alert("目前沒有連接任何裝置！");
@@ -151,6 +193,8 @@
       const payload = connectedDevices.map(d => {
         const sum = d.bpmHistory.reduce((a, b) => a + b, 0);
         return {
+          id: d.id,
+          itemNumber: d.itemNumber || "未對應", // 若有對應物品編號則一併記錄
           name: d.name,
           avgHr: d.bpmHistory.length ? Math.round(sum / d.bpmHistory.length) : 0,
           maxHr: d.maxHr,
@@ -159,7 +203,6 @@
       });
 
       try {
-        // 使用 mode: 'no-cors' 避開跨網域攔截
         await fetch(GAS_WEB_APP_URL, {
           method: 'POST',
           mode: 'no-cors',
