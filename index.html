@@ -115,7 +115,7 @@
 
     const connectedDevices = [];
 
-    // 安全轉義 HTML 特殊字元 (防止 '+' 或其餘特殊符號影響 HTML 渲染)
+    // 安全轉義 HTML 特殊字元 (防止 '+' 或其餘特殊符號影響 HTML 畫面渲染)
     function escapeHtml(str) {
       return String(str || '')
         .replace(/&/g, '&amp;')
@@ -157,7 +157,7 @@
 
         connectedDevices.push(deviceData);
 
-        // ⚡ 2. 立即更新頂部「已連線裝置」標籤列（達 0 秒延遲效果）
+        // ⚡ 2. 立即更新頂部「已連線裝置」標籤列（不用等待 GAS 回應，達 0 秒延遲效果）
         updateBoardHeaderSummary();
 
         await characteristic.startNotifications();
@@ -186,9 +186,7 @@
       const itemEl = deviceData.element.querySelector('.item-number');
 
       try {
-        // 💡 關鍵修正：對 deviceId 進行雙重 URL 編碼 (Double encodeURIComponent)
-        // 避免 GAS 在 HTTP 302 重導向過程中將 '+' 號誤轉為空格 ' '
-        const safeDeviceId = encodeURIComponent(encodeURIComponent(deviceData.id));
+        const safeDeviceId = encodeURIComponent(deviceData.id);
         const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceId=${safeDeviceId}`);
         const data = await response.json();
 
@@ -221,10 +219,10 @@
       
       const badgeList = connectedDevices.map(d => {
         if (d.itemNumber) {
-          // 比對成功
+          // 比對成功 (綠色標籤)
           return `<span class="badge-item matched">📦 ${escapeHtml(d.itemNumber)}</span>`;
         } else {
-          // 比對失敗或尚未比對完成時先顯示裝置內碼
+          // 比對失敗或尚未比對完成時顯示裝置內碼 (藍灰色標籤)
           return `<span class="badge-item unmatched">🆔 ${escapeHtml(d.id)}</span>`;
         }
       });
