@@ -29,16 +29,13 @@
       font-size: 0.85rem;
       transition: all 0.3s ease;
     }
-    /* 比對成功的標籤 (綠色) */
     .badge-item.matched {
       background: #00e676;
       color: #000000;
     }
-    /* 比對失敗 / 預設顯示內碼的標籤 (藍灰色) */
     .badge-item.unmatched {
-      background: #37474f;
-      color: #eceff1;
-      border: 1px solid #546e7a;
+      background: #ff9800;
+      color: #000000;
     }
     
     .btn {
@@ -55,28 +52,28 @@
       box-shadow: 0 4px 10px rgba(0,0,0,0.5); transition: background 0.3s;
     }
     
-    /* 物品編號 / 裝置內碼標籤 (卡片內) */
-    .card .item-number {
+    /* 物品編號標籤 (卡片內) */
+    .card .item-number-container {
+      margin-bottom: 8px;
+    }
+    .card .item-number-badge {
       font-size: 1.1rem;
       font-weight: bold;
       border-radius: 6px;
       padding: 4px 8px;
-      margin-bottom: 8px;
-      display: block;
-      word-break: break-all;
+      display: inline-block;
+      cursor: pointer;
       transition: all 0.3s ease;
     }
-    /* 卡片內 - 比對成功 */
-    .card .item-number.matched {
+    .card .item-number-badge.matched {
       color: #00e676;
-      background: rgba(0, 230, 118, 0.1);
+      background: rgba(0, 230, 118, 0.15);
       border: 1px solid #00e676;
     }
-    /* 卡片內 - 比對失敗/顯示內碼 */
-    .card .item-number.unmatched {
-      color: #b0bec5;
-      background: rgba(176, 190, 197, 0.1);
-      border: 1px solid #546e7a;
+    .card .item-number-badge.unmatched {
+      color: #ffb74d;
+      background: rgba(255, 183, 77, 0.15);
+      border: 1px dashed #ffb74d;
     }
     
     .card .device-name { font-size: 0.85rem; color: #888; margin-bottom: 8px; }
@@ -97,7 +94,7 @@
       <h1>🚴‍♂️ 多人心率團控看板</h1>
       <!-- 看板頂部同步顯示已配對物品/內碼清單 -->
       <div class="summary-bar">
-        <span>已連線裝置：</span>
+        <span>已連線裝備：</span>
         <div id="itemListSummary"><span style="color:#666;">尚無連線裝置</span></div>
       </div>
     </div>
@@ -110,12 +107,9 @@
   <div class="grid" id="cardContainer"></div>
 
   <script>
-    // 發佈的 Google Apps Script Web App 網址
     const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzdQV7quuIG04_KVvaog6dI8qRjRIRncgeMiWfJoNF1OCbIo3brkk_iillVyF1bikhDbw/exec";
-
     const connectedDevices = [];
 
-    // 安全轉義 HTML 特殊字元
     function escapeHtml(str) {
       return String(str || '')
         .replace(/&/g, '&amp;')
@@ -123,15 +117,6 @@
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
-    }
-
-    // 將字串轉為十六進位 (Hex)，防止 '=' 與 '+' 在網址傳遞時被破壞
-    function stringToHex(str) {
-      let hex = '';
-      for (let i = 0; i < str.length; i++) {
-        hex += str.charCodeAt(i).toString(16).padStart(2, '0');
-      }
-      return hex;
     }
 
     document.getElementById('btnConnect').addEventListener('click', async () => {
@@ -149,24 +134,22 @@
         const service = await server.getPrimaryService('heart_rate');
         const characteristic = await service.getCharacteristic('heart_rate_measurement');
 
-        const deviceId = device.id; // 藍芽裝置內碼 (Unique ID)
-        const deviceName = device.name || `心率帶 ${connectedDevices.length + 1}`;
-
-        // 1. 先建立卡片 (預設帶入裝置內碼)
-        const cardElement = createCardElement(deviceId, deviceName);
+        const deviceId = device.id;
+        const deviceName = device.name || `未知藍芽裝置`;
 
         const deviceData = {
           id: deviceId,
           name: deviceName,
-          itemNumber: "", // 用於儲存 Sheet2 比對成功的物品編號
+          itemNumber: "", // 物品編號
           bpmHistory: [],
           maxHr: 0,
-          element: cardElement
+          element: null
         };
 
+        const cardElement = createCardElement(deviceData);
+        deviceData.element = cardElement;
         connectedDevices.push(deviceData);
 
-        // ⚡ 2. 立即更新頂部「已連線裝置」標籤列（0 秒延遲）
         updateBoardHeaderSummary();
 
         await characteristic.startNotifications();
@@ -179,10 +162,10 @@
         device.addEventListener('gattserverdisconnected', () => {
           deviceData.element.querySelector('.bpm').innerText = 'OFF';
           deviceData.element.className = 'card';
-          updateBoardHeaderSummary(); // 斷線時同步更新看板頂部
+          updateBoardHeaderSummary();
         });
 
-        // ⚡ 3. 背景執行 Sheet2 比對，比對完自動無縫更新 UI
+        // 優先嘗試使用藍芽名稱對照 Sheet2
         matchItemNumberFromGAS(deviceData);
 
       } catch (error) {
@@ -190,39 +173,55 @@
       }
     });
 
-    // 向 GAS 查詢藍芽內碼對應 Sheet2 的物品編號
+    // 以藍芽裝置名稱（deviceName）向 GAS 查詢 Sheet2
     async function matchItemNumberFromGAS(deviceData) {
-      const itemEl = deviceData.element.querySelector('.item-number');
+      const badgeEl = deviceData.element.querySelector('.item-number-badge');
 
       try {
-        // 💡 使用 Hex 編碼傳送，百分之百避免 '=' 與 '+' 被網址截斷或轉換
-        const hexId = stringToHex(deviceData.id);
-        const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceIdHex=${hexId}`);
+        const safeName = encodeURIComponent(deviceData.name);
+        const response = await fetch(`${GAS_WEB_APP_URL}?action=getItemNumber&deviceName=${safeName}`);
         const data = await response.json();
 
         if (data && data.matched && data.itemNumber) {
-          // ✅ 比對成功：換成 Sheet2 的物品編號
           deviceData.itemNumber = data.itemNumber;
-          itemEl.innerText = `📦 ${data.itemNumber}`;
-          itemEl.className = "item-number matched";
+          badgeEl.innerText = `📦 ${data.itemNumber}`;
+          badgeEl.className = "item-number-badge matched";
         } else {
-          // ❌ 比對失敗：維持顯示裝置內碼
-          deviceData.itemNumber = "";
-          itemEl.innerText = `🆔 ${deviceData.id}`;
-          itemEl.className = "item-number unmatched";
+          // 若對照表找不到，提供手動選號提示
+          badgeEl.innerText = `✏️ 點此選物品編號`;
+          badgeEl.className = "item-number-badge unmatched";
         }
       } catch (error) {
         console.error("無法查詢物品編號:", error);
-        deviceData.itemNumber = "";
-        itemEl.innerText = `🆔 ${deviceData.id}`;
-        itemEl.className = "item-number unmatched";
+        badgeEl.innerText = `✏️ 點此選物品編號`;
+        badgeEl.className = "item-number-badge unmatched";
       }
 
-      // 同步更新頂部看板清單
       updateBoardHeaderSummary();
     }
 
-    // 更新頂部看板的已連線清單
+    // 現場手動指定/修改物品編號 (點擊卡片標籤觸發)
+    function promptSetItemNumber(deviceId) {
+      const deviceData = connectedDevices.find(d => d.id === deviceId);
+      if (!deviceData) return;
+
+      const input = prompt(`請輸入裝備編號 (例如: A01, 01號):`, deviceData.itemNumber || "");
+      if (input !== null) {
+        const trimmed = input.trim();
+        deviceData.itemNumber = trimmed;
+        
+        const badgeEl = deviceData.element.querySelector('.item-number-badge');
+        if (trimmed) {
+          badgeEl.innerText = `📦 ${trimmed}`;
+          badgeEl.className = "item-number-badge matched";
+        } else {
+          badgeEl.innerText = `✏️ 點此選物品編號`;
+          badgeEl.className = "item-number-badge unmatched";
+        }
+        updateBoardHeaderSummary();
+      }
+    }
+
     function updateBoardHeaderSummary() {
       const summaryContainer = document.getElementById('itemListSummary');
       
@@ -230,7 +229,7 @@
         if (d.itemNumber) {
           return `<span class="badge-item matched">📦 ${escapeHtml(d.itemNumber)}</span>`;
         } else {
-          return `<span class="badge-item unmatched">🆔 ${escapeHtml(d.id)}</span>`;
+          return `<span class="badge-item unmatched">⚠️ 未編號 (${escapeHtml(d.name)})</span>`;
         }
       });
 
@@ -241,14 +240,18 @@
       }
     }
 
-    function createCardElement(id, name) {
+    function createCardElement(deviceData) {
       const container = document.getElementById('cardContainer');
       const card = document.createElement('div');
       card.className = 'card';
-      card.id = `card-${id}`;
+      card.id = `card-${deviceData.id}`;
       card.innerHTML = `
-        <div class="item-number unmatched">🆔 ${escapeHtml(id)}</div>
-        <div class="device-name">${escapeHtml(name)}</div>
+        <div class="item-number-container">
+          <span class="item-number-badge unmatched" onclick="promptSetItemNumber('${deviceData.id}')">
+            🔍 比對中...
+          </span>
+        </div>
+        <div class="device-name">名稱: ${escapeHtml(deviceData.name)}</div>
         <div class="bpm">--</div>
         <div class="zone-label">等待數據...</div>
         <div class="stats">最高: -- | 平均: --</div>
@@ -286,7 +289,6 @@
       return '無氧 / 警示';
     }
 
-    // 將數據寫入至 Sheet1
     async function saveToSheets() {
       if (connectedDevices.length === 0) {
         alert("目前沒有連接任何裝置！");
@@ -297,7 +299,7 @@
         const sum = d.bpmHistory.reduce((a, b) => a + b, 0);
         return {
           id: d.id,
-          itemNumber: d.itemNumber || "未對應",
+          itemNumber: d.itemNumber || "未指定裝備",
           name: d.name,
           avgHr: d.bpmHistory.length ? Math.round(sum / d.bpmHistory.length) : 0,
           maxHr: d.maxHr,
