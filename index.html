@@ -3,14 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>多人心率即時團控看板</title>
+  <title>多人心率即時團控看板 (支援自動重連)</title>
   <style>
     * { box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
     body { background-color: #121212; color: #ffffff; margin: 0; padding: 20px; }
     header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 15px; }
     h1 { margin: 0; font-size: 1.5rem; }
     
-    /* 頂部看板同步物品清單樣式 */
     .summary-bar {
       margin-top: 8px;
       font-size: 0.9rem;
@@ -21,7 +20,6 @@
       flex-wrap: wrap;
     }
     
-    /* 標籤通用樣式 */
     .badge-item {
       padding: 3px 10px;
       border-radius: 6px;
@@ -29,16 +27,9 @@
       font-size: 0.85rem;
       transition: all 0.3s ease;
     }
-    /* 自動比對成功 (綠色) */
-    .badge-item.matched {
-      background: #00e676;
-      color: #000000;
-    }
-    /* 待手動指定 (橘色) */
-    .badge-item.unmatched {
-      background: #ff9800;
-      color: #000000;
-    }
+    .badge-item.matched { background: #00e676; color: #000000; }
+    .badge-item.unmatched { background: #ff9800; color: #000000; }
+    .badge-item.reconnecting { background: #ffeb3b; color: #000000; } /* 重連中狀態 */
     
     .btn {
       background: #00e676; color: #000; border: none; padding: 12px 20px;
@@ -51,13 +42,10 @@
     
     .card {
       background: #1e1e1e; border-radius: 12px; padding: 16px; text-align: center;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.5); transition: background 0.3s;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.5); transition: background 0.3s, border 0.3s;
     }
     
-    /* 物品編號標籤 / 點選按鈕 (卡片內) */
-    .card .item-number-container {
-      margin-bottom: 8px;
-    }
+    .card .item-number-container { margin-bottom: 8px; }
     .card .item-number-badge {
       font-size: 1.1rem;
       font-weight: bold;
@@ -68,22 +56,9 @@
       transition: all 0.3s ease;
       user-select: none;
     }
-    .card .item-number-badge:hover {
-      opacity: 0.85;
-      transform: translateY(-1px);
-    }
-    /* 比對成功樣式 */
-    .card .item-number-badge.matched {
-      color: #00e676;
-      background: rgba(0, 230, 118, 0.15);
-      border: 1px solid #00e676;
-    }
-    /* 未比對到（點選按鈕）樣式 */
-    .card .item-number-badge.unmatched {
-      color: #ffb74d;
-      background: rgba(255, 183, 77, 0.15);
-      border: 1px dashed #ffb74d;
-    }
+    .card .item-number-badge:hover { opacity: 0.85; transform: translateY(-1px); }
+    .card .item-number-badge.matched { color: #00e676; background: rgba(0, 230, 118, 0.15); border: 1px solid #00e676; }
+    .card .item-number-badge.unmatched { color: #ffb74d; background: rgba(255, 183, 77, 0.15); border: 1px dashed #ffb74d; }
     
     .card .device-name { font-size: 0.85rem; color: #888; margin-bottom: 8px; }
     .card .bpm { font-size: 3.5rem; font-weight: 900; line-height: 1; margin: 10px 0; }
@@ -94,6 +69,8 @@
     .zone-aerobic { background: #f57f17; color: #fffde7; } 
     .zone-threshold { background: #e65100; color: #ffe0b2; } 
     .zone-max { background: #b71c1c; color: #ffcdd2; } 
+    /* 斷線重連中卡片樣式 */
+    .zone-reconnecting { background: #37474f; color: #fff59d; border: 1px dashed #fbc02d; }
   </style>
 </head>
 <body>
@@ -101,7 +78,6 @@
   <header>
     <div>
       <h1>🚴‍♂️ 多人心率團控看板</h1>
-      <!-- 看板頂部同步顯示已配對物品清單 -->
       <div class="summary-bar">
         <span>已連線裝備：</span>
         <div id="itemListSummary"><span style="color:#666;">尚無連線裝置</span></div>
@@ -119,14 +95,10 @@
     const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzdQV7quuIG04_KVvaog6dI8qRjRIRncgeMiWfJoNF1OCbIo3brkk_iillVyF1bikhDbw/exec";
     const connectedDevices = [];
 
-    // 安全轉義 HTML 特殊字元
     function escapeHtml(str) {
       return String(str || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
 
     document.getElementById('btnConnect').addEventListener('click', async () => {
@@ -140,43 +112,34 @@
           filters: [{ services: ['heart_rate'] }]
         });
 
-        const server = await device.gatt.connect();
-        const service = await server.getPrimaryService('heart_rate');
-        const characteristic = await service.getCharacteristic('heart_rate_measurement');
-
         const deviceId = device.id;
         const deviceName = device.name || `心率帶 ${connectedDevices.length + 1}`;
 
         const deviceData = {
+          device: device,            // 保存原始藍芽裝置物件，做為重連用
           id: deviceId,
           name: deviceName,
-          itemNumber: "", // 物品編號
+          itemNumber: "",
           bpmHistory: [],
           maxHr: 0,
-          element: null
+          element: null,
+          isReconnecting: false,    // 是否正在嘗試重連
+          reconnectTimer: null
         };
 
         const cardElement = createCardElement(deviceData);
         deviceData.element = cardElement;
         connectedDevices.push(deviceData);
 
-        // ⚡ 1. 連線瞬間立刻更新頂部看板清單（0秒延遲）
-        updateBoardHeaderSummary();
+        // 綁定斷線與數據監聽
+        await connectToDevice(deviceData);
 
-        await characteristic.startNotifications();
-        characteristic.addEventListener('characteristicvaluechanged', (event) => {
-          const value = event.target.value;
-          const bpm = value.getUint8(1); 
-          updateDeviceData(deviceData, bpm);
-        });
-
+        // 監聽斷線事件：自動啟動背景重連
         device.addEventListener('gattserverdisconnected', () => {
-          deviceData.element.querySelector('.bpm').innerText = 'OFF';
-          deviceData.element.className = 'card';
-          updateBoardHeaderSummary();
+          handleDisconnect(deviceData);
         });
 
-        // ⚡ 2. 優先嘗試用「藍芽廣播名稱 (device.name)」查詢 Sheet2
+        updateBoardHeaderSummary();
         matchItemNumberFromGAS(deviceData);
 
       } catch (error) {
@@ -184,7 +147,55 @@
       }
     });
 
-    // 依藍芽廣播名稱查詢 Sheet2
+    // 連線與訂閱藍芽數據邏輯
+    async function connectToDevice(deviceData) {
+      const server = await deviceData.device.gatt.connect();
+      const service = await server.getPrimaryService('heart_rate');
+      const characteristic = await service.getCharacteristic('heart_rate_measurement');
+
+      await characteristic.startNotifications();
+      characteristic.addEventListener('characteristicvaluechanged', (event) => {
+        const value = event.target.value;
+        const bpm = value.getUint8(1); 
+        updateDeviceData(deviceData, bpm);
+      });
+    }
+
+    // 💡 斷線處理：自動觸發重連機制
+    function handleDisconnect(deviceData) {
+      console.warn(`[藍芽斷線] 裝置 ${deviceData.name} 斷開連線，開啟自動重連機制...`);
+      
+      const card = deviceData.element;
+      card.className = 'card zone-reconnecting';
+      card.querySelector('.bpm').innerText = '...';
+      card.querySelector('.zone-label').innerText = '⚡ 自動重連中';
+
+      updateBoardHeaderSummary();
+
+      // 開啟背景每 3 秒自動重連一次的迴圈
+      if (!deviceData.isReconnecting) {
+        deviceData.isReconnecting = true;
+        
+        deviceData.reconnectTimer = setInterval(async () => {
+          try {
+            console.log(`[自動重連] 嘗試重新連接 ${deviceData.name}...`);
+            await connectToDevice(deviceData);
+
+            // 成功連上，清除重連迴圈
+            clearInterval(deviceData.reconnectTimer);
+            deviceData.isReconnecting = false;
+            deviceData.reconnectTimer = null;
+            
+            console.log(`[自動重連] ✅ 裝置 ${deviceData.name} 成功恢復連線！`);
+            updateBoardHeaderSummary();
+          } catch (err) {
+            console.log(`[自動重連] 尚未搜到裝置，3秒後再次嘗試...`);
+          }
+        }, 3000); // 每 3 秒嘗試一次
+      }
+    }
+
+    // 依名稱對照 Sheet2
     async function matchItemNumberFromGAS(deviceData) {
       const badgeEl = deviceData.element.querySelector('.item-number-badge');
 
@@ -194,33 +205,29 @@
         const data = await response.json();
 
         if (data && data.matched && data.itemNumber) {
-          // ✅ 1. 自動比對成功：顯示物品編號
           deviceData.itemNumber = data.itemNumber;
           badgeEl.innerText = `📦 ${data.itemNumber}`;
           badgeEl.className = "item-number-badge matched";
         } else {
-          // ❌ 2. 自動比對失敗：切換為點選設定模式
           deviceData.itemNumber = "";
           badgeEl.innerText = `✏️ 點此選擇物品編號`;
           badgeEl.className = "item-number-badge unmatched";
         }
       } catch (error) {
-        console.error("無法查詢物品編號:", error);
         deviceData.itemNumber = "";
         badgeEl.innerText = `✏️ 點此選擇物品編號`;
         badgeEl.className = "item-number-badge unmatched";
       }
 
-      // 數據更新後同步刷新頂部看板
       updateBoardHeaderSummary();
     }
 
-    // 現場點選 / 修改物品編號（點擊卡片標籤觸發）
+    // 手動指定物品編號
     function promptSetItemNumber(deviceId) {
       const deviceData = connectedDevices.find(d => d.id === deviceId);
       if (!deviceData) return;
 
-      const input = prompt(`請輸入或選擇此裝置的【物品編號】:\n(例如: 01號, A05, 心率帶A)`, deviceData.itemNumber || "");
+      const input = prompt(`請輸入裝備編號 (例如: 01號, A05):`, deviceData.itemNumber || "");
       if (input !== null) {
         const trimmed = input.trim();
         deviceData.itemNumber = trimmed;
@@ -237,12 +244,13 @@
       }
     }
 
-    // 更新頂部看板已連線清單
     function updateBoardHeaderSummary() {
       const summaryContainer = document.getElementById('itemListSummary');
       
       const badgeList = connectedDevices.map(d => {
-        if (d.itemNumber) {
+        if (d.isReconnecting) {
+          return `<span class="badge-item reconnecting">⚡ 重連中 (${escapeHtml(d.itemNumber || d.name)})</span>`;
+        } else if (d.itemNumber) {
           return `<span class="badge-item matched">📦 ${escapeHtml(d.itemNumber)}</span>`;
         } else {
           return `<span class="badge-item unmatched">⚠️ 待指定 (${escapeHtml(d.name)})</span>`;
